@@ -39,6 +39,7 @@ import com.sun.tools.javac.code.Flags;
 import com.sun.tools.javac.tree.JCTree;
 import com.sun.tools.javac.tree.JCTree.JCVariableDecl;
 import com.sun.tools.javac.tree.TreeInfo;
+import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Optional;
 import javax.lang.model.element.Name;
@@ -48,6 +49,16 @@ import javax.lang.model.element.Name;
  * Java 14.
  */
 public class Java14InputAstVisitor extends JavaInputAstVisitor {
+  private static final Method COMPILATION_UNIT_TREE_GET_MODULE =
+      getMethod(CompilationUnitTree.class, "getModule");
+  private static final Method CLASS_TREE_GET_PERMITS_CLAUSE =
+      getMethod(ClassTree.class, "getPermitsClause");
+  private static final Method BINDING_PATTERN_TREE_GET_VARIABLE =
+      getMethod(BindingPatternTree.class, "getVariable");
+  private static final Method BINDING_PATTERN_TREE_GET_TYPE =
+      getMethod(BindingPatternTree.class, "getType");
+  private static final Method BINDING_PATTERN_TREE_GET_BINDING =
+      getMethod(BindingPatternTree.class, "getBinding");
 
   public Java14InputAstVisitor(OpsBuilder builder, int indentMultiplier) {
     super(builder, indentMultiplier);
@@ -55,9 +66,8 @@ public class Java14InputAstVisitor extends JavaInputAstVisitor {
 
   @Override
   protected void handleModule(boolean first, CompilationUnitTree node) {
-    try {
-      ModuleTree module =
-          (ModuleTree) CompilationUnitTree.class.getMethod("getModule").invoke(node);
+    if (COMPILATION_UNIT_TREE_GET_MODULE != null) {
+      ModuleTree module = (ModuleTree) invoke(COMPILATION_UNIT_TREE_GET_MODULE, node);
       if (module != null) {
         if (!first) {
           builder.blankLineWanted(BlankLineWanted.YES);
@@ -66,16 +76,15 @@ public class Java14InputAstVisitor extends JavaInputAstVisitor {
         visitModule(module, null);
         builder.forcedBreak();
       }
-    } catch (ReflectiveOperationException e) {
-      // Java < 17, see https://bugs.openjdk.java.net/browse/JDK-8255464
     }
+    // Else Java < 17, see https://bugs.openjdk.java.net/browse/JDK-8255464
   }
 
   @Override
   protected List<? extends Tree> getPermitsClause(ClassTree node) {
-    try {
-      return (List<? extends Tree>) ClassTree.class.getMethod("getPermitsClause").invoke(node);
-    } catch (ReflectiveOperationException e) {
+    if (CLASS_TREE_GET_PERMITS_CLAUSE != null) {
+      return (List<? extends Tree>) invoke(CLASS_TREE_GET_PERMITS_CLAUSE, node);
+    } else {
       // Java < 15
       return super.getPermitsClause(node);
     }
@@ -84,20 +93,18 @@ public class Java14InputAstVisitor extends JavaInputAstVisitor {
   @Override
   public Void visitBindingPattern(BindingPatternTree node, Void unused) {
     sync(node);
-    try {
-      VariableTree variableTree =
-          (VariableTree) BindingPatternTree.class.getMethod("getVariable").invoke(node);
+    if (BINDING_PATTERN_TREE_GET_VARIABLE != null) {
+      VariableTree variableTree = (VariableTree) invoke(BINDING_PATTERN_TREE_GET_VARIABLE, node);
       visitBindingPattern(
           variableTree.getModifiers(), variableTree.getType(), variableTree.getName());
-    } catch (ReflectiveOperationException e1) {
-      try {
-        Tree type = (Tree) BindingPatternTree.class.getMethod("getType").invoke(node);
-        Name name = (Name) BindingPatternTree.class.getMethod("getBinding").invoke(node);
-        visitBindingPattern(/* modifiers= */ null, type, name);
-      } catch (ReflectiveOperationException e2) {
-        e2.addSuppressed(e1);
-        throw new LinkageError(e2.getMessage(), e2);
-      }
+    } else if (BINDING_PATTERN_TREE_GET_TYPE != null && BINDING_PATTERN_TREE_GET_BINDING != null) {
+      Tree type = (Tree) invoke(BINDING_PATTERN_TREE_GET_TYPE, node);
+      Name name = (Name) invoke(BINDING_PATTERN_TREE_GET_BINDING, node);
+      visitBindingPattern(/* modifiers= */ null, type, name);
+    } else {
+      throw new LinkageError(
+          "BindingPatternTree must have either getVariable() or both getType() and getBinding(),"
+              + " but does not");
     }
     return null;
   }
@@ -287,5 +294,21 @@ public class Java14InputAstVisitor extends JavaInputAstVisitor {
         throw new AssertionError(node.getCaseKind());
     }
     return null;
+  }
+
+  private static Method getMethod(Class<?> c, String name) {
+    try {
+      return c.getMethod(name);
+    } catch (ReflectiveOperationException e) {
+      return null;
+    }
+  }
+
+  private static Object invoke(Method m, Object target) {
+    try {
+      return m.invoke(target);
+    } catch (ReflectiveOperationException e) {
+      throw new AssertionError(e);
+    }
   }
 }
